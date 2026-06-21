@@ -1,0 +1,19 @@
+node_modules/
+npm-debug.log
+
+.env
+.env.local
+
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+.terraform/
+crash.log
+crash.*.log
+# Note: .terraform.lock.hcl is intentionally NOT ignored — it pins provider
+# versions and must be committed.
+
+.DS_Store
+.idea/
+.vscode/

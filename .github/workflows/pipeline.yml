@@ -1,0 +1,249 @@
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write       # required for OIDC -> AWS
+  contents: read
+  pull-requests: write  # required to post the plan as a PR comment
+
+env:
+  AWS_REGION: eu-west-3
+  TF_VERSION: 1.5.7
+  NODE_VERSION: "20"
+  TF_WORKING_DIR: infra/environments/dev
+
+concurrency:
+  # Only one workflow run per branch at a time — avoids two deploys racing.
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Tests — runs the Node test suite against a real Postgres service.
+  #    Bonus from the sujet ("Tests automatisés de l'API exécutés avant le build").
+  # -------------------------------------------------------------------------
+  test:
+    name: Unit + integration tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskflow
+          POSTGRES_PASSWORD: taskflow
+          POSTGRES_DB: taskflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskflow -d taskflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: taskflow
+          DB_PASSWORD: taskflow
+          DB_NAME: taskflow
+
+  # -------------------------------------------------------------------------
+  # 2. Build — builds the Docker image and pushes it to ECR.
+  #    Tag = commit SHA (immutable) + "latest" pointer.
+  # -------------------------------------------------------------------------
+  build:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
+      image_tag: ${{ steps.image.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tag
+        id: image
+        run: |
+          REGISTRY="${{ steps.ecr.outputs.registry }}"
+          REPO="taskflow-dev"
+          TAG="${GITHUB_SHA::7}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "uri=$REGISTRY/$REPO:$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.uri }}
+            ${{ steps.ecr.outputs.registry }}/taskflow-dev:latest
+
+  # -------------------------------------------------------------------------
+  # 3. Plan — on pull_request only. Posts the plan as a PR comment.
+  # -------------------------------------------------------------------------
+  plan:
+    name: Terraform plan
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: terraform fmt check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive ../..
+
+      - name: terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set +e
+          terraform plan -no-color -input=false \
+            -var "container_image=${{ needs.build.outputs.image_uri }}" \
+            -out plan.tfplan \
+            > plan.out 2>&1
+          EXIT=$?
+          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
+          # Truncate to fit within the 65k char GitHub comment limit.
+          head -c 60000 plan.out > plan.trimmed
+          {
+            echo 'output<<EOF'
+            cat plan.trimmed
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          exit $EXIT
+
+      - name: Post plan to PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outputs.output }}
+          PLAN_EXIT: ${{ steps.plan.outputs.exit_code }}
+        with:
+          script: |
+            const output = process.env.PLAN_OUTPUT || '(no output)';
+            const exit = process.env.PLAN_EXIT || 'unknown';
+            const status = exit === '0' ? '✅ success' : '❌ failed';
+            const body = [
+              `### Terraform plan — ${status}`,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              output,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  # -------------------------------------------------------------------------
+  # 4. Deploy — on push to main only. Applies Terraform with the new image
+  #    and forces a new ECS deployment.
+  # -------------------------------------------------------------------------
+  deploy:
+    name: Terraform apply + ECS deploy
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: terraform apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var "container_image=${{ needs.build.outputs.image_uri }}"
+
+      - name: Register new ECS task definition and roll out
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          CLUSTER=$(terraform output -raw ecs_cluster_name)
+          SERVICE=$(terraform output -raw ecs_service_name)
+
+          # The task definition created by Terraform already references the new
+          # image (via container_image variable). We just need to tell the
+          # service to pick up the latest active task definition revision.
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --force-new-deployment \
+            --region "$AWS_REGION" >/dev/null
+
+          echo "Waiting for service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "$AWS_REGION"
+
+          echo "Deployment complete."
