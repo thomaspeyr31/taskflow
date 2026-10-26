@@ -1,0 +1,145 @@
+{
+    "failed_checks": [
+        {
+            "file": "/bootstrap-ci/main.tf",
+            "findings": [
+                {
+                    "resource": "aws_iam_policy_document.permissions",
+                    "check_ids": [
+                        "CKV_AWS_107",
+                        "CKV_AWS_108",
+                        "CKV_AWS_109",
+                        "CKV_AWS_110",
+                        "CKV_AWS_111",
+                        "CKV_AWS_356"
+                    ]
+                }
+            ]
+        },
+        {
+            "file": "/modules/compute/main.tf",
+            "findings": [
+                {
+                    "resource": "module.compute.aws_cloudwatch_log_group.this",
+                    "check_ids": [
+                        "CKV_AWS_158",
+                        "CKV_AWS_338"
+                    ]
+                },
+                {
+                    "resource": "module.compute.aws_ecr_repository.this",
+                    "check_ids": [
+                        "CKV_AWS_136",
+                        "CKV_AWS_51"
+                    ]
+                },
+                {
+                    "resource": "module.compute.aws_ecs_cluster.this",
+                    "check_ids": [
+                        "CKV_AWS_65"
+                    ]
+                },
+                {
+                    "resource": "module.compute.aws_ecs_service.this",
+                    "check_ids": [
+                        "CKV_AWS_333"
+                    ]
+                },
+                {
+                    "resource": "module.compute.aws_lb.this",
+                    "check_ids": [
+                        "CKV2_AWS_20",
+                        "CKV2_AWS_28",
+                        "CKV_AWS_131",
+                        "CKV_AWS_150",
+                        "CKV_AWS_91"
+                    ]
+                },
+                {
+                    "resource": "module.compute.aws_lb_listener.http",
+                    "check_ids": [
+                        "CKV_AWS_103",
+                        "CKV_AWS_2"
+                    ]
+                },
+                {
+                    "resource": "module.compute.aws_lb_target_group.this",
+                    "check_ids": [
+                        "CKV_AWS_378"
+                    ]
+                }
+            ]
+        },
+        {
+            "file": "/modules/database/main.tf",
+            "findings": [
+                {
+                    "resource": "module.database.aws_db_instance.this",
+                    "check_ids": [
+                        "CKV2_AWS_30",
+                        "CKV2_AWS_60",
+                        "CKV_AWS_118",
+                        "CKV_AWS_129",
+                        "CKV_AWS_157",
+                        "CKV_AWS_161",
+                        "CKV_AWS_226",
+                        "CKV_AWS_293",
+                        "CKV_AWS_353"
+                    ]
+                },
+                {
+                    "resource": "module.database.aws_secretsmanager_secret.db",
+                    "check_ids": [
+                        "CKV2_AWS_57",
+                        "CKV_AWS_149"
+                    ]
+                }
+            ]
+        },
+        {
+            "file": "/modules/network/main.tf",
+            "findings": [
+                {
+                    "resource": "module.network.aws_security_group.alb",
+                    "check_ids": [
+                        "CKV2_AWS_5",
+                        "CKV_AWS_260",
+                        "CKV_AWS_382"
+                    ]
+                },
+                {
+                    "resource": "module.network.aws_security_group.ecs",
+                    "check_ids": [
+                        "CKV2_AWS_5",
+                        "CKV_AWS_382"
+                    ]
+                },
+                {
+                    "resource": "module.network.aws_security_group.rds",
+                    "check_ids": [
+                        "CKV2_AWS_5"
+                    ]
+                },
+                {
+                    "resource": "module.network.aws_subnet.public[0]",
+                    "check_ids": [
+                        "CKV_AWS_130"
+                    ]
+                },
+                {
+                    "resource": "module.network.aws_subnet.public[1]",
+                    "check_ids": [
+                        "CKV_AWS_130"
+                    ]
+                },
+                {
+                    "resource": "module.network.aws_vpc.this",
+                    "check_ids": [
+                        "CKV2_AWS_11",
+                        "CKV2_AWS_12"
+                    ]
+                }
+            ]
+        }
+    ]
+}

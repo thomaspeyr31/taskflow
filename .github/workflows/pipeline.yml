@@ -55,6 +55,10 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Dependency audit (fail on high or critical)
+        run: npm audit --omit=dev --audit-level=high
+
       - run: npm test
         env:
           DB_HOST: localhost
@@ -64,13 +68,55 @@ jobs:
           DB_NAME: taskflow
 
   # -------------------------------------------------------------------------
-  # 2. Build — builds the Docker image and pushes it to ECR.
+  # 1b. IaC security — Checkov on the Terraform code.
+  #     The full report goes to the repository's Security tab; the gate only
+  #     fails on findings that are NOT in the reviewed baseline
+  #     (infra/.checkov.baseline, see SECURITY.md), so any new
+  #     misconfiguration blocks the pipeline.
+  # -------------------------------------------------------------------------
+  security-iac:
+    name: IaC security scan (Checkov)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to code scanning
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Checkov (pinned version, same rules as the baseline)
+        run: pip install checkov==3.3.30
+
+      - name: Full report (SARIF, informational)
+        run: |
+          checkov -d infra --framework terraform --soft-fail \
+            -o sarif --output-file-path checkov-report
+
+      - name: Upload report to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: checkov-report/results_sarif.sarif
+          category: checkov-terraform
+
+      - name: Gate — fail on findings not in the accepted baseline
+        run: |
+          checkov -d infra --framework terraform \
+            --baseline infra/.checkov.baseline --compact
+
+  # -------------------------------------------------------------------------
+  # 2. Build — builds the Docker image, scans it, then pushes it to ECR.
   #    Tag = commit SHA (immutable) + "latest" pointer.
+  #    Nothing is pushed if the image has fixable HIGH/CRITICAL CVEs.
   # -------------------------------------------------------------------------
   build:
-    name: Build & push image
+    name: Build, scan & push image
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, security-iac]
     outputs:
       image_uri: ${{ steps.image.outputs.uri }}
       image_tag: ${{ steps.image.outputs.tag }}
@@ -97,14 +143,28 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "uri=$REGISTRY/$REPO:$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build image (loaded locally, not pushed yet)
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          load: true
           tags: |
             ${{ steps.image.outputs.uri }}
             ${{ steps.ecr.outputs.registry }}/taskflow-dev:latest
+
+      - name: Scan image (Trivy) — block on fixable HIGH/CRITICAL
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.uri }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Push the scanned image
+        run: |
+          docker push "${{ steps.image.outputs.uri }}"
+          docker push "${{ steps.ecr.outputs.registry }}/taskflow-dev:latest"
 
   # -------------------------------------------------------------------------
   # 3. Plan — on pull_request only. Posts the plan as a PR comment.
