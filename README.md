@@ -1,5 +1,12 @@
 # TaskFlow
 
+[![pipeline](https://github.com/thomaspeyr31/taskflow/actions/workflows/pipeline.yml/badge.svg)](https://github.com/thomaspeyr31/taskflow/actions/workflows/pipeline.yml)
+![Terraform](https://img.shields.io/badge/Terraform-modular-7B42BC?logo=terraform&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-ECS%20Fargate%20·%20RDS%20·%20ALB-FF9900?logo=amazonwebservices&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-OIDC-2088FF?logo=githubactions&logoColor=white)
+
+🇫🇷 [Version française](README.fr.md)
+
 A small task-management REST API used as a vehicle to demonstrate a clean,
 reproducible **AWS deployment with Infrastructure-as-Code and CI/CD**.
 
