@@ -14,6 +14,9 @@ crash.*.log
 # Note: .terraform.lock.hcl is intentionally NOT ignored — it pins provider
 # versions and must be committed.
 
+# local security scan output
+checkov-report/
+
 .DS_Store
 .idea/
 .vscode/

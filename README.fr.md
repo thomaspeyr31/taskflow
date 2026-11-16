@@ -6,7 +6,44 @@
 
 Une petite API REST de gestion de tâches, prétexte pour démontrer un **déploiement AWS propre et reproductible, en Infrastructure as Code avec CI/CD**.
 
-L'application est volontairement minimale (un CRUD de tâches). L'intérêt du projet est tout ce qui l'entoure : la conteneurisation, un Terraform découpé en modules sur AWS (VPC → RDS → ECS Fargate derrière un ALB), un état distant, et un pipeline GitHub Actions qui teste, construit, planifie et déploie.
+L'application est volontairement minimale (un CRUD de tâches). L'intérêt du projet est tout ce qui l'entoure : la conteneurisation, un Terraform découpé en modules sur AWS (VPC → RDS → ECS Fargate derrière un ALB), un état distant, et un pipeline GitHub Actions qui teste, scanne, construit, planifie et déploie.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    user([Client]) -->|HTTP :80| alb
+
+    subgraph aws[AWS · eu-west-3]
+        subgraph vpc[VPC]
+            subgraph pub[Public subnets · 2 AZ]
+                alb[Application Load Balancer]
+                ecs[ECS Fargate tasks<br/>Node.js API]
+            end
+            subgraph priv[Private subnets]
+                rds[(RDS PostgreSQL)]
+            end
+        end
+        ecr[ECR]
+        sm[Secrets Manager<br/>DB credentials]
+        logs[CloudWatch Logs]
+        state[(S3 state + DynamoDB lock)]
+    end
+
+    alb -->|container port<br/>SG: ALB only| ecs
+    ecs -->|5432<br/>SG: ECS only| rds
+    ecs -. pulls image .-> ecr
+    ecs -. reads secret .-> sm
+    ecs -. logs .-> logs
+
+    gha[GitHub Actions] -->|OIDC, no static keys| role[IAM CI role]
+    role -->|push scanned image| ecr
+    role -->|terraform plan / apply| state
+```
+
+Les security groups chaînent les couches : seul l'ALB peut joindre les conteneurs, et seuls les conteneurs peuvent joindre la base. Voir [SECURITY.md](SECURITY.md) pour ce qui est volontairement simplifié dans l'environnement `dev`.
 
 ---
 
@@ -21,6 +58,7 @@ L'application est volontairement minimale (un CRUD de tâches). L'intérêt du p
 | Calcul | ECS Fargate derrière un Application Load Balancer |
 | État Terraform | S3 (chiffré, versionné) + verrou DynamoDB |
 | CI/CD | GitHub Actions (OIDC → AWS, aucune clé statique) |
+| Sécurité | npm audit, Checkov (IaC), Gitleaks (secrets), Trivy (image), Dependabot |
 
 ---
 
@@ -136,10 +174,16 @@ Sorties utiles : `alb_dns_name` (URL publique de l'API), `ecr_repository_url`, `
 
 `.github/workflows/pipeline.yml` s'exécute à chaque push ou PR sur `main` et s'authentifie auprès d'AWS via **OIDC** (aucun identifiant longue durée) :
 
-1. **test** — lance les tests de l'API sur un conteneur Postgres de service.
-2. **build** — construit l'image Docker et la pousse sur ECR (taguée avec le SHA du commit + `latest`).
-3. **plan** — *sur les pull requests* : `terraform plan` publié en commentaire de la PR.
-4. **deploy** — *sur push vers `main`* : `terraform apply` avec la nouvelle image, puis nouveau déploiement ECS forcé et attente de la stabilisation du service.
+1. **test** — audite les dépendances de production (`npm audit`), puis lance les tests de l'API sur un conteneur Postgres de service.
+2. **security-iac** — scanne le code Terraform avec Checkov. Le rapport complet est publié dans l'onglet Security ; le job échoue sur toute anomalie absente de la baseline validée (voir [SECURITY.md](SECURITY.md)).
+3. **security-secrets** — scanne tout l'historique git avec Gitleaks ; une clé, un jeton ou un mot de passe commité fait échouer le pipeline.
+4. **build** — construit l'image Docker, la scanne avec Trivy (échec sur une vulnérabilité HIGH/CRITICAL corrigeable), puis pousse l'image vérifiée sur ECR (taguée avec le SHA du commit + `latest`). Ne s'exécute que si tous les jobs précédents réussissent.
+5. **plan** — *sur les pull requests* : `terraform plan` publié en commentaire de la PR.
+6. **deploy** — *sur push vers `main`* : `terraform apply` avec la nouvelle image, puis nouveau déploiement ECS forcé et attente de la stabilisation du service.
+
+Dependabot propose chaque semaine les mises à jour des paquets npm, de l'image Docker de base et des GitHub Actions.
+
+Les risques volontairement acceptés dans l'environnement `dev` (HTTP sans TLS, tâches en subnet public, clés gérées par AWS…) et leur correction en production sont détaillés dans [SECURITY.md](SECURITY.md).
 
 ### Réglages GitHub nécessaires
 
@@ -161,7 +205,7 @@ taskflow/
 │   ├── routes/tasks.js  # routes CRUD
 │   └── __tests__/       # tests de l'API
 ├── infra/               # Terraform (voir plus haut)
-├── .github/workflows/   # pipeline CI/CD
+├── .github/             # pipeline CI/CD + Dependabot
 ├── Dockerfile           # multi-étapes, sans root
 ├── docker-compose.yml   # API + Postgres en local
 └── .env.example

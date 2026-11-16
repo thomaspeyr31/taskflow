@@ -8,12 +8,51 @@
 🇫🇷 [Version française](README.fr.md)
 
 A small task-management REST API used as a vehicle to demonstrate a clean,
-reproducible **AWS deployment with Infrastructure-as-Code and CI/CD**.
+reproducible and **secure AWS deployment with Infrastructure-as-Code and CI/CD**.
 
 The application itself is deliberately minimal (a CRUD over tasks). The point of
 the project is everything around it: containerization, a modular Terraform setup
 on AWS (VPC → RDS → ECS/Fargate behind an ALB), remote state, and a GitHub
-Actions pipeline that tests, builds, plans and deploys.
+Actions pipeline that tests, scans, builds, plans and deploys.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    user([Client]) -->|HTTP :80| alb
+
+    subgraph aws[AWS · eu-west-3]
+        subgraph vpc[VPC]
+            subgraph pub[Public subnets · 2 AZ]
+                alb[Application Load Balancer]
+                ecs[ECS Fargate tasks<br/>Node.js API]
+            end
+            subgraph priv[Private subnets]
+                rds[(RDS PostgreSQL)]
+            end
+        end
+        ecr[ECR]
+        sm[Secrets Manager<br/>DB credentials]
+        logs[CloudWatch Logs]
+        state[(S3 state + DynamoDB lock)]
+    end
+
+    alb -->|container port<br/>SG: ALB only| ecs
+    ecs -->|5432<br/>SG: ECS only| rds
+    ecs -. pulls image .-> ecr
+    ecs -. reads secret .-> sm
+    ecs -. logs .-> logs
+
+    gha[GitHub Actions] -->|OIDC, no static keys| role[IAM CI role]
+    role -->|push scanned image| ecr
+    role -->|terraform plan / apply| state
+```
+
+Security groups chain the tiers: only the ALB can reach the containers, and only
+the containers can reach the database. See [SECURITY.md](SECURITY.md) for what
+is deliberately simplified in this `dev` environment.
 
 ---
 
@@ -28,6 +67,7 @@ Actions pipeline that tests, builds, plans and deploys.
 | Compute | ECS Fargate behind an Application Load Balancer |
 | State | S3 (encrypted, versioned) + DynamoDB lock |
 | CI/CD | GitHub Actions (OIDC → AWS, no static keys) |
+| Security | npm audit, Checkov (IaC), Gitleaks (secrets), Trivy (image), Dependabot |
 
 ---
 
@@ -149,11 +189,22 @@ Useful outputs: `alb_dns_name` (public API URL), `ecr_repository_url`,
 `.github/workflows/pipeline.yml` runs on every push/PR to `main` and
 authenticates to AWS via **OIDC** (no long-lived credentials):
 
-1. **test** — run the API test suite against a Postgres service container.
-2. **build** — build the Docker image, push to ECR (tagged with the commit SHA + `latest`).
-3. **plan** — *on pull requests*: `terraform plan` posted back as a PR comment.
-4. **deploy** — *on push to `main`*: `terraform apply` with the new image, then
+1. **test** — audit production dependencies (`npm audit`), then run the API
+   test suite against a Postgres service container.
+2. **security-iac** — scan the Terraform code with Checkov. The full report is
+   published to the Security tab; the job fails on any finding that is not in
+   the reviewed baseline (see [SECURITY.md](SECURITY.md)).
+3. **security-secrets** — scan the whole git history with Gitleaks; any
+   committed key, token or password fails the pipeline.
+4. **build** — build the Docker image, scan it with Trivy (fails on fixable
+   HIGH/CRITICAL vulnerabilities), then push the scanned image to ECR (tagged
+   with the commit SHA + `latest`). Runs only if all previous jobs pass.
+5. **plan** — *on pull requests*: `terraform plan` posted back as a PR comment.
+6. **deploy** — *on push to `main`*: `terraform apply` with the new image, then
    force a new ECS rollout and wait for the service to stabilize.
+
+Dependabot proposes weekly updates for npm packages, the Docker base image and
+GitHub Actions.
 
 ### Required GitHub settings
 
@@ -175,8 +226,9 @@ taskflow/
 │   ├── routes/tasks.js  # CRUD routes
 │   └── __tests__/       # API tests
 ├── infra/               # Terraform (see above)
-├── .github/workflows/   # CI/CD pipeline
+├── .github/             # CI/CD pipeline + Dependabot
 ├── Dockerfile           # multi-stage, non-root
 ├── docker-compose.yml   # local API + Postgres
+├── SECURITY.md          # security controls and accepted risks
 └── .env.example
 ```
